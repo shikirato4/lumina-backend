@@ -1,15 +1,23 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import os
+import requests
+import base64
 
 app = FastAPI(title="Lumina Backend", version="1.0")
 
-# Almacenamiento en memoria temporal del servidor (puedes conectarlo a SQLite o Supabase después)
 memory_store = []
+TELEGRAM_BOT_TOKEN = "8882482341:AAFA1_ueRX8mmwFDBwySPPW8i5xmff-rYTU"
 
 class MemoryItem(BaseModel):
     user_id: str
     content: str
+
+class VisionItem(BaseModel):
+    user_id: str
+    chat_id: str
+    file_id: str
+    gemini_key: str
+    caption: str = "Describe esta imagen con detalle."
 
 @app.get("/")
 def health_check():
@@ -18,7 +26,6 @@ def health_check():
 @app.post("/memory/save")
 def save_memory(item: MemoryItem):
     memory_store.append({"user_id": item.user_id, "content": item.content})
-    # Mantener un límite razonable
     if len(memory_store) > 100:
         memory_store.pop(0)
     return {"success": True, "total_memories": len(memory_store)}
@@ -33,3 +40,57 @@ def clear_memories(user_id: str):
     global memory_store
     memory_store = [m for m in memory_store if m["user_id"] != user_id]
     return {"success": True, "message": "Memorias borradas para el usuario."}
+
+@app.post("/vision")
+def analyze_vision(item: VisionItem):
+    try:
+        # 1. Obtener la ruta del archivo en Telegram
+        tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={item.file_id}"
+        r = requests.get(tg_url)
+        res_json = r.json()
+        if not res_json.get("ok"):
+            return {"success": False, "error": "No se pudo obtener el archivo de Telegram"}
+        
+        file_path = res_json["result"]["file_path"]
+        
+        # 2. Descargar la imagen desde los servidores de Telegram
+        file_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+        img_response = requests.get(file_url)
+        if img_response.status_code != 200:
+            return {"success": False, "error": "No se pudo descargar la imagen"}
+        
+        # 3. Codificar en base64 para enviarla a Gemini Vision
+        encoded_image = base64.b64encode(img_response.content).decode("utf-8")
+        
+        # 4. Llamar a Gemini 1.5 Flash (modelo optimizado para visión)
+        gemini_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": item.gemini_key
+        }
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": item.caption},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": encoded_image
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        gem_resp = requests.post(gemini_url, headers=headers, json=payload)
+        if gem_resp.status_code != 200:
+            return {"success": False, "error": f"Error en Gemini API: {gem_resp.text}"}
+            
+        gem_data = gem_resp.json()
+        answer = gem_data["candidates"][0]["content"]["parts"][0]["text"]
+        return {"success": True, "analysis": answer}
+        
+    except Exception as e:
+        return {"success": False, "error": str(e)}
