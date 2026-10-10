@@ -94,7 +94,7 @@ def analyze_vision(item: VisionItem):
         for key in keys_to_try:
             if not key or len(key) < 10:
                 continue
-            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
             gem_resp = requests.post(gemini_url, headers=headers, json=payload)
             
             if gem_resp.status_code == 200:
