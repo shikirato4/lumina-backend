@@ -5,13 +5,12 @@ import base64
 import os
 import google.generativeai as genai
 
-app = FastAPI(title="Lumina Backend", version="2.1")
+app = FastAPI(title="Lumina Backend", version="2.3")
 
 memory_store = []
 chat_context = {}  
 TELEGRAM_BOT_TOKEN = "8882482341:AAFA1_ueRX8mmwFDBwySPPW8i5xmff-rYTU"
 
-HF_TOKEN = os.getenv("HF_TOKEN", "")
 GEMINI_MODEL = "gemini-1.5-flash"
 
 class MemoryItem(BaseModel):
@@ -180,39 +179,60 @@ def analyze_vision(item: VisionItem):
     except Exception as e:
         return {"success": False, "error": f"Excepción: {str(e)}"}
 
+# --- ENDPOINT DE IMAGEN USANDO GOOGLE IMAGEN 3 CON ROTACIÓN DE LLAVES ---
 @app.post("/image")
 def generate_image(item: ImageItem):
     try:
         enhanced_prompt = item.prompt
         keys_to_try = item.gemini_keys if item.gemini_keys else []
         
+        # 1. Optimizar prompt con Gemini
         for key in keys_to_try:
             if key and len(key) > 10:
                 try:
                     genai.configure(api_key=key)
                     model = genai.GenerativeModel(GEMINI_MODEL)
                     opt_res = model.generate_content(
-                        f"Translate and optimize this prompt into English for an Stable Diffusion XL realism model to generate an ultra-photorealistic, highly detailed, raw, cinematic masterpiece scene: {item.prompt}"
+                        f"Translate and optimize this prompt into English for Google Imagen 3 to generate an ultra-realistic, highly detailed, cinematic masterpiece image: {item.prompt}"
                     )
                     enhanced_prompt = opt_res.text.strip()
                     break
                 except Exception:
                     continue
 
-        # URL CORREGIDA CON EL NUEVO ROUTER OFICIAL DE HUGGING FACE
-        API_URL = "https://router.huggingface.co/hf-inference/models/RunDiffusion/Juggernaut-XL-v9"
-        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-        payload = {"inputs": enhanced_prompt}
+        # 2. Generar imagen usando Google Imagen 3 con rotación de llaves
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "instances": [{"prompt": enhanced_prompt}],
+            "parameters": {
+                "sampleCount": 1,
+                "aspectRatio": "1:1"
+            }
+        }
 
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
-        
-        if response.status_code == 200:
-            tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-            files = {'photo': ('image.png', response.content, 'image/png')}
-            data = {'chat_id': item.chat_id, 'caption': f"✨ *Prompt:* {item.prompt}", 'parse_mode': 'Markdown'}
-            requests.post(tg_url, data=data, files=files)
-            return {"success": True}
-        else:
-            return {"success": False, "error": f"Hugging Face error ({response.status_code}): {response.text}"}
+        last_error = ""
+        for key in keys_to_try:
+            if not key or len(key) < 10: continue
+            
+            imagen_url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key={key}"
+            response = requests.post(imagen_url, headers=headers, json=payload, timeout=60)
+            
+            if response.status_code == 200:
+                res_data = response.json()
+                if "predictions" in res_data and len(res_data["predictions"]) > 0:
+                    base64_img = res_data["predictions"][0].get("bytesBase64Encoded", "")
+                    if base64_img:
+                        image_bytes = base64.b64decode(base64_img)
+                        
+                        # Enviar foto a Telegram
+                        tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+                        files = {'photo': ('image.png', image_bytes, 'image/png')}
+                        data = {'chat_id': item.chat_id, 'caption': f"✨ *Prompt:* {item.prompt}", 'parse_mode': 'Markdown'}
+                        requests.post(tg_url, data=data, files=files)
+                        return {"success": True}
+            else:
+                last_error = f"HTTP {response.status_code}: {response.text}"
+
+        return {"success": False, "error": f"Todas las llaves fallaron en Imagen 3. {last_error}"}
     except Exception as e:
         return {"success": False, "error": f"Excepción en imagen: {str(e)}"}
