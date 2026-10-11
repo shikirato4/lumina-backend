@@ -5,7 +5,7 @@ import base64
 import os
 import google.generativeai as genai
 
-app = FastAPI(title="Lumina Backend", version="1.9")
+app = FastAPI(title="Lumina Backend", version="2.0")
 
 memory_store = []
 chat_context = {}  
@@ -180,6 +180,8 @@ def analyze_vision(item: VisionItem):
     except Exception as e:
         return {"success": False, "error": f"Excepción: {str(e)}"}
 
+# --- ENDPOINT DE IMAGEN ACTUALIZADO CON JUGGERNAUT XL (REALISMO PURO) ---
+
 @app.post("/image")
 def generate_image(item: ImageItem):
     try:
@@ -191,21 +193,22 @@ def generate_image(item: ImageItem):
                 try:
                     genai.configure(api_key=key)
                     model = genai.GenerativeModel(GEMINI_MODEL)
+                    # Optimizamos el prompt específicamente para un modelo de realismo SDXL
                     opt_res = model.generate_content(
-                        f"Translate and optimize this prompt into English for FLUX.1-dev to generate an ultra-realistic, highly detailed, cinematic masterpiece image: {item.prompt}"
+                        f"Translate and optimize this prompt into English for an Stable Diffusion XL realism model to generate an ultra-photorealistic, highly detailed, raw, cinematic masterpiece scene: {item.prompt}"
                     )
                     enhanced_prompt = opt_res.text.strip()
                     break
                 except Exception:
                     continue
 
-        # Usando FLUX.1-dev oficial a través del router de Hugging Face
-        API_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-dev"
+        # CAMBIO DE MODELO: Juggernaut XL v9 es una fiera realista soportada en HF gratis
+        API_URL = "https://api-inference.huggingface.co/models/RunDiffusion/Juggernaut-XL-v9"
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         payload = {"inputs": enhanced_prompt}
 
-        # Timeout amplio (90s) para darle tiempo a FLUX.1-dev de procesar sin problemas
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=90)
+        # Timeout de 60s es suficiente para este modelo
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
         
         if response.status_code == 200:
             tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
