@@ -140,7 +140,8 @@ def generate_image(item: ImageItem):
                 except Exception:
                     continue
 
-        API_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+        # URL actualizada con el nuevo router oficial de Hugging Face
+        API_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         payload = {"inputs": enhanced_prompt}
 
