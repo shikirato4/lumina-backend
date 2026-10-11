@@ -5,7 +5,7 @@ import base64
 import os
 import google.generativeai as genai
 
-app = FastAPI(title="Lumina Backend", version="1.7")
+app = FastAPI(title="Lumina Backend", version="1.9")
 
 memory_store = []
 chat_context = {}  
@@ -66,7 +66,6 @@ def clear_chat(user_id: str):
         chat_context[user_id] = []
     return {"success": True, "message": "Contexto de conversación reiniciado."}
 
-# --- NUEVO ENDPOINT DE CHAT CON VENTANA DE CONTEXTO DE 10 MENSAJES ---
 @app.post("/chat")
 def handle_chat_backend(item: ChatItem):
     try:
@@ -74,7 +73,6 @@ def handle_chat_backend(item: ChatItem):
         if user_id not in chat_context:
             chat_context[user_id] = []
         
-        # Mantener ventana de los últimos 10 mensajes de contexto
         history = chat_context[user_id][-10:]
         contents_payload = []
         for msg in history:
@@ -112,7 +110,6 @@ def handle_chat_backend(item: ChatItem):
                     answer = answer.strip()
                     
                     if answer:
-                        # Guardar en el historial de contexto de Render
                         chat_context[user_id].append({"role": "user", "text": item.message})
                         chat_context[user_id].append({"role": "model", "text": answer})
                         return {"success": True, "reply": answer}
@@ -195,18 +192,21 @@ def generate_image(item: ImageItem):
                     genai.configure(api_key=key)
                     model = genai.GenerativeModel(GEMINI_MODEL)
                     opt_res = model.generate_content(
-                        f"Translate and optimize this prompt into English for FLUX AI to generate a stunning, highly detailed, photorealistic, cinematic masterpiece image: {item.prompt}"
+                        f"Translate and optimize this prompt into English for FLUX.1-dev to generate an ultra-realistic, highly detailed, cinematic masterpiece image: {item.prompt}"
                     )
                     enhanced_prompt = opt_res.text.strip()
                     break
                 except Exception:
                     continue
 
-        API_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
+        # Usando FLUX.1-dev oficial a través del router de Hugging Face
+        API_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-dev"
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         payload = {"inputs": enhanced_prompt}
 
-        response = requests.post(API_URL, headers=headers, json=payload, timeout=55)
+        # Timeout amplio (90s) para darle tiempo a FLUX.1-dev de procesar sin problemas
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=90)
+        
         if response.status_code == 200:
             tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
             files = {'photo': ('image.png', response.content, 'image/png')}
