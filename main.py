@@ -5,13 +5,14 @@ import base64
 import os
 import google.generativeai as genai
 
-app = FastAPI(title="Lumina Backend", version="1.1")
+app = FastAPI(title="Lumina Backend", version="1.2")
 
 memory_store = []
 chat_context = {}  
 TELEGRAM_BOT_TOKEN = "8882482341:AAFA1_ueRX8mmwFDBwySPPW8i5xmff-rYTU"
 
 HF_TOKEN = os.getenv("HF_TOKEN", "")
+GEMINI_MODEL = "gemma-4-31b-it"
 
 class MemoryItem(BaseModel):
     user_id: str
@@ -102,7 +103,7 @@ def analyze_vision(item: VisionItem):
         last_error = ""
         for key in keys_to_try:
             if not key or len(key) < 10: continue
-            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={key}"
             gem_resp = requests.post(gemini_url, headers=headers, json=payload)
             
             if gem_resp.status_code == 200:
@@ -119,19 +120,17 @@ def analyze_vision(item: VisionItem):
     except Exception as e:
         return {"success": False, "error": f"Excepción: {str(e)}"}
 
-# --- NUEVO ENDPOINT DE IMÁGENES CON HUGGING FACE (FLUX.1) ---
 @app.post("/image")
 def generate_image(item: ImageItem):
     try:
         enhanced_prompt = item.prompt
         keys_to_try = item.gemini_keys if item.gemini_keys else []
         
-        # Optimizar prompt con Gemini si hay llaves disponibles
         for key in keys_to_try:
             if key and len(key) > 10:
                 try:
                     genai.configure(api_key=key)
-                    model = genai.GenerativeModel("gemini-1.5-flash")
+                    model = genai.GenerativeModel(GEMINI_MODEL)
                     opt_res = model.generate_content(
                         f"Translate and optimize this prompt into English for FLUX AI to generate a stunning, highly detailed, photorealistic, cinematic masterpiece image (NO text): {item.prompt}"
                     )
@@ -140,7 +139,6 @@ def generate_image(item: ImageItem):
                 except Exception:
                     continue
 
-        # Llamada a Hugging Face Serverless API (FLUX.1-schnell)
         API_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         payload = {"inputs": enhanced_prompt}
