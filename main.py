@@ -10,7 +10,7 @@ app = FastAPI(title="Lumina Backend", version="2.5")
 
 memory_store = []
 chat_context = {}  
-TELEGRAM_BOT_TOKEN = "8882482341:AAFA1_ueRX8mmwFDBwySPPW8i5xmff-rYTU"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 GEMINI_MODEL = "gemini-1.5-flash"
 
@@ -210,7 +210,6 @@ def generate_image(item: ImageItem):
             requests.post(tg_url, data=data, files=files)
             return {"success": True}
         else:
-            # Control de Rate Limit y saturación de Pollinations
             return {"success": False, "error": "servidor lleno espera un minuto"}
     except Exception as e:
         return {"success": False, "error": "servidor lleno espera un minuto"}
