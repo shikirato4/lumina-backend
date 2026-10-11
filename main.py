@@ -5,26 +5,31 @@ import base64
 import os
 import google.generativeai as genai
 
-app = FastAPI(title="Lumina Backend", version="1.3")
+app = FastAPI(title="Lumina Backend", version="1.7")
 
 memory_store = []
 chat_context = {}  
 TELEGRAM_BOT_TOKEN = "8882482341:AAFA1_ueRX8mmwFDBwySPPW8i5xmff-rYTU"
 
 HF_TOKEN = os.getenv("HF_TOKEN", "")
-# Configurado Gemini 1.5 Flash para visión, archivos y optimización de imágenes
 GEMINI_MODEL = "gemini-1.5-flash"
 
 class MemoryItem(BaseModel):
     user_id: str
     content: str
 
+class ChatItem(BaseModel):
+    user_id: str
+    chat_id: str
+    message: str
+    gemini_keys: list[str] = []
+    model: str = "gemma-4-31b-it"
+
 class VisionItem(BaseModel):
     user_id: str
     chat_id: str
     file_id: str
     gemini_keys: list[str] = []
-    gemini_key: str = ""
     caption: str = "Analiza este archivo con detalle."
     mime_type: str = "image/jpeg"
 
@@ -60,6 +65,63 @@ def clear_chat(user_id: str):
     if user_id in chat_context:
         chat_context[user_id] = []
     return {"success": True, "message": "Contexto de conversación reiniciado."}
+
+# --- NUEVO ENDPOINT DE CHAT CON VENTANA DE CONTEXTO DE 10 MENSAJES ---
+@app.post("/chat")
+def handle_chat_backend(item: ChatItem):
+    try:
+        user_id = item.user_id
+        if user_id not in chat_context:
+            chat_context[user_id] = []
+        
+        # Mantener ventana de los últimos 10 mensajes de contexto
+        history = chat_context[user_id][-10:]
+        contents_payload = []
+        for msg in history:
+            contents_payload.append({"role": msg["role"], "parts": [{"text": msg["text"]}]})
+            
+        contents_payload.append({
+            "role": "user",
+            "parts": [{"text": item.message}]
+        })
+
+        keys_to_try = item.gemini_keys if item.gemini_keys else []
+        if not keys_to_try:
+            return {"success": False, "error": "No se proporcionaron llaves de Gemini."}
+
+        headers = {"Content-Type": "application/json"}
+        payload = {"contents": contents_payload}
+        
+        target_model = item.model if item.model else "gemma-4-31b-it"
+        last_error = ""
+        
+        for key in keys_to_try:
+            if not key or len(key) < 10: continue
+            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={key}"
+            gem_resp = requests.post(gemini_url, headers=headers, json=payload)
+            
+            if gem_resp.status_code == 200:
+                gem_data = gem_resp.json()
+                if "candidates" in gem_data and len(gem_data["candidates"]) > 0:
+                    parts = gem_data["candidates"][0]["content"]["parts"]
+                    answer = ""
+                    for part in parts:
+                        if part.get("thought", False): continue
+                        if "text" in part:
+                            answer += part["text"]
+                    answer = answer.strip()
+                    
+                    if answer:
+                        # Guardar en el historial de contexto de Render
+                        chat_context[user_id].append({"role": "user", "text": item.message})
+                        chat_context[user_id].append({"role": "model", "text": answer})
+                        return {"success": True, "reply": answer}
+            else:
+                last_error = f"HTTP {gem_resp.status_code}: {gem_resp.text}"
+
+        return {"success": False, "error": f"Todas las llaves fallaron. {last_error}"}
+    except Exception as e:
+        return {"success": False, "error": f"Excepción en chat: {str(e)}"}
 
 @app.post("/vision")
 def analyze_vision(item: VisionItem):
@@ -133,14 +195,13 @@ def generate_image(item: ImageItem):
                     genai.configure(api_key=key)
                     model = genai.GenerativeModel(GEMINI_MODEL)
                     opt_res = model.generate_content(
-                        f"Translate and optimize this prompt into English for FLUX AI to generate a stunning, highly detailed, photorealistic, cinematic masterpiece image (NO text): {item.prompt}"
+                        f"Translate and optimize this prompt into English for FLUX AI to generate a stunning, highly detailed, photorealistic, cinematic masterpiece image: {item.prompt}"
                     )
                     enhanced_prompt = opt_res.text.strip()
                     break
                 except Exception:
                     continue
 
-        # URL actualizada con el nuevo router oficial de Hugging Face
         API_URL = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
         headers = {"Authorization": f"Bearer {HF_TOKEN}"}
         payload = {"inputs": enhanced_prompt}
