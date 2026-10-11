@@ -5,14 +5,15 @@ import base64
 import os
 import google.generativeai as genai
 
-app = FastAPI(title="Lumina Backend", version="1.2")
+app = FastAPI(title="Lumina Backend", version="1.3")
 
 memory_store = []
 chat_context = {}  
 TELEGRAM_BOT_TOKEN = "8882482341:AAFA1_ueRX8mmwFDBwySPPW8i5xmff-rYTU"
 
 HF_TOKEN = os.getenv("HF_TOKEN", "")
-GEMINI_MODEL = "gemma-4-31b-it"
+# Configurado Gemini 1.5 Flash para visión, archivos y optimización de imágenes
+GEMINI_MODEL = "gemini-1.5-flash"
 
 class MemoryItem(BaseModel):
     user_id: str
