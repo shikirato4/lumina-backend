@@ -17,7 +17,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # Whitelist de IDs autorizados
 allowed_users = {"6363412200", "8389931379", "1057724787"}
 
-GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_MODEL = "gemini-3.8-flash"
 
 
 class MemoryItem(BaseModel):
