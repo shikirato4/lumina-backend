@@ -113,11 +113,13 @@ def telegram_webhook(update: dict):
                 "• Envía cualquier mensaje de texto para chatear.\n"
                 "• Envía imágenes con texto para que Lumina las analice.\n"
                 "• Usa la generación de imágenes integrada con FLUX.\n\n"
-                "🛠 *Comandos de Gestión (Admin):*\n"
-                "• `/showallusers` - Muestra la lista de usuarios registrados por nombre.\n"
-                "• `/addnewuser <ID> <nombre>` - Registra un nuevo usuario.\n"
-                "• `/deleteuser <nombre>` - Elimina un usuario por su nombre.\n"
-                "• `/reset` - Reinicia el servidor backend."
+                "📌 *Comandos Disponibles:*\n"
+                "• `/start` - Inicia la interacción con el bot.\n"
+                "• `/help` - Muestra este menú de ayuda.\n"
+                "• `/showallusers` - Muestra la lista de usuarios registrados por nombre (solo admin).\n"
+                "• `/addnewuser <ID> <nombre>` - Registra un nuevo usuario (solo admin).\n"
+                "• `/deleteuser <nombre>` - Elimina un usuario por su nombre (solo admin).\n"
+                "• `/reset` - Reinicia el servidor backend (solo admin)."
             )
             requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
