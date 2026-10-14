@@ -8,14 +8,22 @@ import google.generativeai as genai
 from pydantic import BaseModel
 import requests
 
-app = FastAPI(title="Lumina Backend", version="2.7")
+app = FastAPI(title="Lumina Backend", version="2.9")
 
 memory_store = []
 chat_context = {}  # Almacena el historial por chat_id para aislar conversaciones
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Whitelist de IDs autorizados
-allowed_users = {"6363412200", "8389931379", "1057724787"}
+# Credenciales de Cloudflare Workers AI
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
+
+# Base de datos de usuarios autorizados: {user_id: nombre}
+user_database = {
+    "6363412200": "shikirato",
+    "8389931379": "regina",
+    "1057724787": "josho",
+}
 
 GEMINI_MODEL = "gemini-3.8-flash"
 
@@ -82,8 +90,12 @@ def telegram_webhook(update: dict):
         user_id = str(msg["from"]["id"])
         text = msg.get("text", "")
 
-        # Validar Whitelist para mensajes generales (excepto /start)
-        if user_id not in allowed_users and not text.startswith("/start"):
+        # Validar Whitelist para mensajes generales (excepto /start y /help)
+        if (
+            user_id not in user_database
+            and not text.startswith("/start")
+            and not text.startswith("/help")
+        ):
             requests.post(
                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                 json={
@@ -93,7 +105,57 @@ def telegram_webhook(update: dict):
             )
             return {"ok": True}
 
-        # Comando /addnewuser (Solo permitido para el administrador principal)
+        # Comando /help
+        if text.startswith("/help"):
+            help_text = (
+                "✨ *Menú de Ayuda - Lumina AI* ✨\n\n"
+                "💬 *Funciones Principales:*\n"
+                "• Envía cualquier mensaje de texto para chatear.\n"
+                "• Envía imágenes con texto para que Lumina las analice.\n"
+                "• Usa la generación de imágenes integrada con FLUX.\n\n"
+                "🛠 *Comandos de Gestión (Admin):*\n"
+                "• `/showallusers` - Muestra la lista de usuarios registrados por nombre.\n"
+                "• `/addnewuser <ID> <nombre>` - Registra un nuevo usuario.\n"
+                "• `/deleteuser <nombre>` - Elimina un usuario por su nombre.\n"
+                "• `/reset` - Reinicia el servidor backend."
+            )
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": help_text,
+                    "parse_mode": "Markdown",
+                },
+            )
+            return {"ok": True}
+
+        # Comando /showallusers (Solo administrador)
+        if text.startswith("/showallusers"):
+            if user_id != "6363412200":
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": "❌ No tienes permisos para usar este comando.",
+                    },
+                )
+                return {"ok": True}
+
+            user_list_str = "👥 *Usuarios Registrados en Lumina:*\n\n"
+            for uid, name in user_database.items():
+                user_list_str += f"• *{name.capitalize()}* (ID: `{uid}`)\n"
+
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": user_list_str,
+                    "parse_mode": "Markdown",
+                },
+            )
+            return {"ok": True}
+
+        # Comando /addnewuser (Solo administrador)
         if text.startswith("/addnewuser"):
             if user_id != "6363412200":
                 requests.post(
@@ -106,14 +168,16 @@ def telegram_webhook(update: dict):
                 return {"ok": True}
 
             parts = text.split()
-            if len(parts) > 1:
+            if len(parts) >= 3:
                 new_id = parts[1].strip()
-                allowed_users.add(new_id)
+                new_name = parts[2].strip().lower()
+                user_database[new_id] = new_name
                 requests.post(
                     f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                     json={
                         "chat_id": chat_id,
-                        "text": f"✅ Usuario con ID `{new_id}` agregado exitosamente a la whitelist.",
+                        "text": f"✅ Usuario *{new_name.capitalize()}* con ID `{new_id}` agregado exitosamente a la whitelist.",
+                        "parse_mode": "Markdown",
                     },
                 )
             else:
@@ -121,7 +185,67 @@ def telegram_webhook(update: dict):
                     f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                     json={
                         "chat_id": chat_id,
-                        "text": "⚠️ Uso correcto: `/addnewuser <ID_DEL_USUARIO>`",
+                        "text": "⚠️ Uso correcto: `/addnewuser <ID_DEL_USUARIO> <NOMBRE>`",
+                        "parse_mode": "Markdown",
+                    },
+                )
+            return {"ok": True}
+
+        # Comando /deleteuser (Solo administrador)
+        if text.startswith("/deleteuser"):
+            if user_id != "6363412200":
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": "❌ No tienes permisos para usar este comando.",
+                    },
+                )
+                return {"ok": True}
+
+            parts = text.split()
+            if len(parts) >= 2:
+                target_name = parts[1].strip().lower()
+                found_id = None
+                for uid, name in user_database.items():
+                    if name.lower() == target_name:
+                        found_id = uid
+                        break
+
+                if found_id:
+                    if found_id == "6363412200":
+                        requests.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={
+                                "chat_id": chat_id,
+                                "text": "❌ No puedes eliminar al administrador principal (shikirato).",
+                            },
+                        )
+                    else:
+                        del user_database[found_id]
+                        requests.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={
+                                "chat_id": chat_id,
+                                "text": f"✅ Usuario *{target_name.capitalize()}* eliminado de la whitelist exitosamente.",
+                                "parse_mode": "Markdown",
+                            },
+                        )
+                else:
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                        json={
+                            "chat_id": chat_id,
+                            "text": f"❌ No se encontró ningún usuario registrado con el nombre '{target_name}'.",
+                        },
+                    )
+            else:
+                requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": "⚠️ Uso correcto: `/deleteuser <nombre>`",
+                        "parse_mode": "Markdown",
                     },
                 )
             return {"ok": True}
@@ -202,12 +326,19 @@ def handle_chat_backend(item: ChatItem):
         elif len(chat_context[session_id]) == 0:
             is_new_or_reset = True
 
-        history = chat_context[session_id][-10:]
+        # Sanitizar historial para garantizar que comience con 'user' y alterne correctamente
+        raw_history = chat_context[session_id][-10:]
+        while raw_history and raw_history[0]["role"] != "user":
+            raw_history.pop(0)
+
         contents_payload = []
-        for msg in history:
-            contents_payload.append(
-                {"role": msg["role"], "parts": [{"text": msg["text"]}]}
-            )
+        expected_role = "user"
+        for msg in raw_history:
+            if msg["role"] == expected_role:
+                contents_payload.append(
+                    {"role": msg["role"], "parts": [{"text": msg["text"]}]}
+                )
+                expected_role = "model" if expected_role == "user" else "user"
 
         contents_payload.append({"role": "user", "parts": [{"text": item.message}]})
 
@@ -292,12 +423,19 @@ def analyze_vision(item: VisionItem):
         if session_id not in chat_context:
             chat_context[session_id] = []
 
-        history = chat_context[session_id][-10:]
+        # Sanitizar historial en visión también
+        raw_history = chat_context[session_id][-10:]
+        while raw_history and raw_history[0]["role"] != "user":
+            raw_history.pop(0)
+
         contents_payload = []
-        for msg in history:
-            contents_payload.append(
-                {"role": msg["role"], "parts": [{"text": msg["text"]}]}
-            )
+        expected_role = "user"
+        for msg in raw_history:
+            if msg["role"] == expected_role:
+                contents_payload.append(
+                    {"role": msg["role"], "parts": [{"text": msg["text"]}]}
+                )
+                expected_role = "model" if expected_role == "user" else "user"
 
         contents_payload.append({
             "role": "user",
@@ -361,13 +499,38 @@ def generate_image(item: ImageItem):
                     genai.configure(api_key=key)
                     model = genai.GenerativeModel(GEMINI_MODEL)
                     opt_res = model.generate_content(
-                        f"Translate and optimize this prompt into English for FLUX AI to generate an ultra-realistic, highly detailed, cinematic masterpiece image: {item.prompt}"
+                        f"Translate and optimize this prompt into English for FLUX AI to generate an ultra-realistic, highly detailed, cinematic masterpiece image, ensuring any requested text inside quotes remains exactly as specified: {item.prompt}"
                     )
                     enhanced_prompt = opt_res.text.strip()
                     break
                 except Exception:
                     continue
 
+        # 1. Intentar generación con Cloudflare Workers AI (FLUX.1 Schnell)
+        if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+            cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+            cf_headers = {
+                "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+                "Content-Type": "application/json",
+            }
+            cf_payload = {"prompt": enhanced_prompt}
+
+            cf_resp = requests.post(
+                cf_url, headers=cf_headers, json=cf_payload, timeout=45
+            )
+
+            if cf_resp.status_code == 200:
+                tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+                files = {"photo": ("image.png", cf_resp.content, "image/png")}
+                data = {
+                    "chat_id": item.chat_id,
+                    "caption": f"✨ *Prompt:* {item.prompt}\n⚡ *Motor:* Cloudflare FLUX.1",
+                    "parse_mode": "Markdown",
+                }
+                requests.post(tg_url, data=data, files=files)
+                return {"success": True}
+
+        # 2. Respaldo secundario: Pollinations.ai (si Cloudflare falla)
         encoded_prompt = urllib.parse.quote(enhanced_prompt)
         image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=flux-realism&width=1024&height=1024&nologo=true"
 
@@ -377,7 +540,7 @@ def generate_image(item: ImageItem):
             files = {"photo": ("image.png", img_resp.content, "image/png")}
             data = {
                 "chat_id": item.chat_id,
-                "caption": f"✨ *Prompt:* {item.prompt}",
+                "caption": f"✨ *Prompt:* {item.prompt}\n🎨 *Motor:* Pollinations FLUX",
                 "parse_mode": "Markdown",
             }
             requests.post(tg_url, data=data, files=files)
