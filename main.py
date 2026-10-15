@@ -2,6 +2,7 @@ import base64
 import os
 import sqlite3
 import threading
+import urllib.parse
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -12,7 +13,7 @@ import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Lumina Backend", version="3.3-adjusted")
+app = FastAPI(title="Lumina Backend", version="3.4-debug")
 
 # ---------------- CONFIGURACIÓN ----------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -20,7 +21,6 @@ CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "")
 ADMIN_ID = "6363412200"
 
-# Modelos oficiales asignados por función
 CHAT_MODEL = "gemma-4-31b-it"
 VISION_AND_PROMPT_MODEL = "gemini-3.8-flash"
 
@@ -126,7 +126,7 @@ def startup_event():
                 url,
                 json={
                     "chat_id": ADMIN_ID,
-                    "text": "🟢 ¡Backend Lumina 3.3 ajustado en línea y listo!",
+                    "text": "🟢 ¡Backend Lumina 3.4 Debug en línea y listo!",
                 },
                 timeout=10
             )
@@ -172,7 +172,7 @@ def create_image_job(item: ImageItem):
             enhanced_prompt = item.prompt
             keys_to_try = item.gemini_keys if item.gemini_keys else []
 
-            # Optimización de prompt con gemini-3.8-flash
+            # Optimización de prompt
             for key in keys_to_try:
                 if key and len(key) > 10:
                     try:
@@ -190,7 +190,7 @@ def create_image_job(item: ImageItem):
             image_bytes = None
             engine_used = ""
 
-            # 1. Cloudflare Workers AI
+            # 1. Cloudflare Workers AI con logs de depuración
             if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
                 try:
                     cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID.strip()}/ai/run/@cf/black-forest-labs/flux-1-schnell"
@@ -199,17 +199,23 @@ def create_image_job(item: ImageItem):
                         "Content-Type": "application/json",
                     }
                     cf_payload = {"prompt": enhanced_prompt}
-                    cf_resp = SESSION.post(cf_url, headers=cf_headers, json=cf_payload, timeout=45)
+                    cf_resp = SESSION.post(cf_url, headers=cf_headers, json=cf_payload, timeout=30)
+                    
+                    print(f"CF Status Code: {cf_resp.status_code}")
+                    print(f"CF Response Text: {cf_resp.text}")
+
                     if cf_resp.status_code == 200:
-                        image_bytes = cf_resp.content
-                        engine_used = "Cloudflare FLUX.1"
+                        res_json = cf_resp.json()
+                        if "result" in res_json and "image" in res_json["result"]:
+                            image_bytes = base64.b64decode(res_json["result"]["image"])
+                            engine_used = "Cloudflare FLUX.1"
                 except Exception as e:
-                    print(f"Cloudflare error: {e}")
+                    print(f"Cloudflare exception: {e}")
 
             # 2. Respaldo Pollinations.ai
             if not image_bytes:
                 try:
-                    encoded_prompt = urllib.parse.quote(enhanced_prompt) if 'urllib' in globals() else enhanced_prompt.replace(' ', '%20')
+                    encoded_prompt = urllib.parse.quote(enhanced_prompt)
                     image_url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&nologo=true&model=flux"
                     img_resp = SESSION.get(image_url, timeout=55)
                     if img_resp.status_code == 200:
@@ -263,7 +269,7 @@ def create_image_job(item: ImageItem):
     return {"success": True, "job_id": job_id}
 
 
-# ---------------- ENDPOINT VISIÓN (ASÍNCRONO - Usa gemini-3.8-flash) ----------------
+# ---------------- ENDPOINT VISIÓN (ASÍNCRONO) ----------------
 @app.post("/vision")
 def create_vision_job(item: VisionItem):
     with _job_lock:
@@ -349,7 +355,6 @@ def create_vision_job(item: VisionItem):
             last_error = ""
             analysis_text = ""
 
-            # Análisis con gemini-3.8-flash
             for key in keys_to_try:
                 if not key or len(key) < 10:
                     continue
@@ -397,7 +402,7 @@ def create_vision_job(item: VisionItem):
     return {"success": True, "job_id": job_id}
 
 
-# ---------------- ENDPOINT CHAT (Usa gemma-4-31b-it) ----------------
+# ---------------- ENDPOINT CHAT ----------------
 @app.post("/chat")
 def handle_chat_backend(item: ChatItem):
     try:
