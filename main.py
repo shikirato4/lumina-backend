@@ -503,9 +503,11 @@ def generate_image(item: ImageItem):
                     opt_res = model.generate_content(
                         f"Translate and optimize this prompt into English for FLUX AI to generate an ultra-realistic, highly detailed, cinematic masterpiece image, ensuring any requested text inside quotes remains exactly as specified: {item.prompt}"
                     )
-                    enhanced_prompt = opt_res.text.strip()
+                    if opt_res and hasattr(opt_res, "text") and opt_res.text:
+                        enhanced_prompt = opt_res.text.strip()
                     break
-                except Exception:
+                except Exception as e:
+                    print(f"Gemini prompt optimization error: {e}")
                     continue
 
         image_bytes = None
@@ -513,30 +515,40 @@ def generate_image(item: ImageItem):
 
         # 1. Intentar generación con Cloudflare Workers AI (FLUX.1 Schnell)
         if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
-            cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
-            cf_headers = {
-                "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
-                "Content-Type": "application/json",
-            }
-            cf_payload = {"prompt": enhanced_prompt}
+            try:
+                cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+                cf_headers = {
+                    "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+                    "Content-Type": "application/json",
+                }
+                cf_payload = {"prompt": enhanced_prompt}
 
-            cf_resp = requests.post(
-                cf_url, headers=cf_headers, json=cf_payload, timeout=45
-            )
+                cf_resp = requests.post(
+                    cf_url, headers=cf_headers, json=cf_payload, timeout=45
+                )
 
-            if cf_resp.status_code == 200:
-                image_bytes = cf_resp.content
-                engine_used = "Cloudflare FLUX.1"
+                if cf_resp.status_code == 200:
+                    image_bytes = cf_resp.content
+                    engine_used = "Cloudflare FLUX.1"
+                else:
+                    print(f"Cloudflare error status {cf_resp.status_code}: {cf_resp.text}")
+            except Exception as e:
+                print(f"Cloudflare exception (saltando a Pollinations): {e}")
 
-        # 2. Respaldo secundario: Pollinations.ai (si Cloudflare falla)
+        # 2. Respaldo secundario: Pollinations.ai (si Cloudflare falla o no está configurado)
         if not image_bytes:
-            encoded_prompt = urllib.parse.quote(enhanced_prompt)
-            image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=flux-realism&width=1024&height=1024&nologo=true"
+            try:
+                encoded_prompt = urllib.parse.quote(enhanced_prompt)
+                image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=flux-realism&width=1024&height=1024&nologo=true"
 
-            img_resp = requests.get(image_url, timeout=55)
-            if img_resp.status_code == 200:
-                image_bytes = img_resp.content
-                engine_used = "Pollinations FLUX"
+                img_resp = requests.get(image_url, timeout=55)
+                if img_resp.status_code == 200:
+                    image_bytes = img_resp.content
+                    engine_used = "Pollinations FLUX"
+                else:
+                    print(f"Pollinations error status {img_resp.status_code}")
+            except Exception as e:
+                print(f"Pollinations exception: {e}")
 
         if not image_bytes:
             return {"success": False, "error": "servidor lleno espera un minuto"}
@@ -557,8 +569,9 @@ def generate_image(item: ImageItem):
 
         threading.Thread(target=send_telegram_photo).start()
 
-        # Responder de inmediato al ESP32 para evitar el timeout -11
+        # Responder de inmediato al ESP32
         return {"success": True}
 
     except Exception as e:
+        print(f"Critical error in generate_image: {e}")
         return {"success": False, "error": "servidor lleno espera un minuto"}
