@@ -13,12 +13,12 @@ import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Lumina Backend", version="3.4-debug")
+app = FastAPI(title="Lumina Backend", version="3.5-fixed")
 
 # ---------------- CONFIGURACIÓN ----------------
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "").strip()
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
 ADMIN_ID = "6363412200"
 
 CHAT_MODEL = "gemma-4-31b-it"
@@ -116,7 +116,6 @@ class ImageItem(BaseModel):
     request_id: str = ""
 
 
-# Evento de inicio
 @app.on_event("startup")
 def startup_event():
     if TELEGRAM_BOT_TOKEN:
@@ -126,7 +125,7 @@ def startup_event():
                 url,
                 json={
                     "chat_id": ADMIN_ID,
-                    "text": "🟢 ¡Backend Lumina 3.4 Debug en línea y listo!",
+                    "text": "🟢 ¡Backend Lumina 3.5 en línea y listo!",
                 },
                 timeout=10
             )
@@ -139,7 +138,6 @@ def health_check():
     return {"status": "online", "bot": "Lumina Backend Active"}
 
 
-# ---------------- GESTIÓN DE TAREAS (JOBS) ----------------
 @app.get("/jobs/{job_id}")
 def get_job_status(job_id: str):
     with _job_lock:
@@ -172,7 +170,7 @@ def create_image_job(item: ImageItem):
             enhanced_prompt = item.prompt
             keys_to_try = item.gemini_keys if item.gemini_keys else []
 
-            # Optimización de prompt
+            # Optimización de prompt con gemini-3.8-flash
             for key in keys_to_try:
                 if key and len(key) > 10:
                     try:
@@ -190,12 +188,12 @@ def create_image_job(item: ImageItem):
             image_bytes = None
             engine_used = ""
 
-            # 1. Cloudflare Workers AI con logs de depuración
+            # 1. Cloudflare Workers AI
             if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
                 try:
-                    cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID.strip()}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+                    cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
                     cf_headers = {
-                        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN.strip()}",
+                        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
                         "Content-Type": "application/json",
                     }
                     cf_payload = {"prompt": enhanced_prompt}
@@ -206,7 +204,7 @@ def create_image_job(item: ImageItem):
 
                     if cf_resp.status_code == 200:
                         res_json = cf_resp.json()
-                        if "result" in res_json and "image" in res_json["result"]:
+                        if "result" in res_json and res_json["result"] and "image" in res_json["result"]:
                             image_bytes = base64.b64decode(res_json["result"]["image"])
                             engine_used = "Cloudflare FLUX.1"
                 except Exception as e:
