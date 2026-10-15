@@ -513,12 +513,12 @@ def generate_image(item: ImageItem):
         image_bytes = None
         engine_used = ""
 
-        # 1. Intentar generación con Cloudflare Workers AI (FLUX.1 Schnell)
+        # 1. Intentar generación con Cloudflare Workers AI corregido
         if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
             try:
-                cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+                cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID.strip()}/ai/run/@cf/black-forest-labs/flux-1-schnell"
                 cf_headers = {
-                    "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+                    "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN.strip()}",
                     "Content-Type": "application/json",
                 }
                 cf_payload = {"prompt": enhanced_prompt}
@@ -533,13 +533,13 @@ def generate_image(item: ImageItem):
                 else:
                     print(f"Cloudflare error status {cf_resp.status_code}: {cf_resp.text}")
             except Exception as e:
-                print(f"Cloudflare exception (saltando a Pollinations): {e}")
+                print(f"Cloudflare exception: {e}")
 
-        # 2. Respaldo secundario: Pollinations.ai (si Cloudflare falla o no está configurado)
+        # 2. Respaldo secundario: Pollinations.ai con la ruta estable actualizada
         if not image_bytes:
             try:
                 encoded_prompt = urllib.parse.quote(enhanced_prompt)
-                image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=flux-realism&width=1024&height=1024&nologo=true"
+                image_url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&nologo=true&model=flux"
 
                 img_resp = requests.get(image_url, timeout=55)
                 if img_resp.status_code == 200:
