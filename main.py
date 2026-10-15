@@ -508,6 +508,9 @@ def generate_image(item: ImageItem):
                 except Exception:
                     continue
 
+        image_bytes = None
+        engine_used = ""
+
         # 1. Intentar generación con Cloudflare Workers AI (FLUX.1 Schnell)
         if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
             cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
@@ -522,32 +525,40 @@ def generate_image(item: ImageItem):
             )
 
             if cf_resp.status_code == 200:
-                tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-                files = {"photo": ("image.png", cf_resp.content, "image/png")}
-                data = {
-                    "chat_id": item.chat_id,
-                    "caption": f"✨ *Prompt:* {item.prompt}\n⚡ *Motor:* Cloudflare FLUX.1",
-                    "parse_mode": "Markdown",
-                }
-                requests.post(tg_url, data=data, files=files)
-                return {"success": True}
+                image_bytes = cf_resp.content
+                engine_used = "Cloudflare FLUX.1"
 
         # 2. Respaldo secundario: Pollinations.ai (si Cloudflare falla)
-        encoded_prompt = urllib.parse.quote(enhanced_prompt)
-        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=flux-realism&width=1024&height=1024&nologo=true"
+        if not image_bytes:
+            encoded_prompt = urllib.parse.quote(enhanced_prompt)
+            image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?model=flux-realism&width=1024&height=1024&nologo=true"
 
-        img_resp = requests.get(image_url, timeout=55)
-        if img_resp.status_code == 200:
-            tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-            files = {"photo": ("image.png", img_resp.content, "image/png")}
-            data = {
-                "chat_id": item.chat_id,
-                "caption": f"✨ *Prompt:* {item.prompt}\n🎨 *Motor:* Pollinations FLUX",
-                "parse_mode": "Markdown",
-            }
-            requests.post(tg_url, data=data, files=files)
-            return {"success": True}
-        else:
+            img_resp = requests.get(image_url, timeout=55)
+            if img_resp.status_code == 200:
+                image_bytes = img_resp.content
+                engine_used = "Pollinations FLUX"
+
+        if not image_bytes:
             return {"success": False, "error": "servidor lleno espera un minuto"}
+
+        # Enviar la foto a Telegram en segundo plano (hilo) para no bloquear al ESP32
+        def send_telegram_photo():
+            try:
+                tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+                files = {"photo": ("image.png", image_bytes, "image/png")}
+                data = {
+                    "chat_id": item.chat_id,
+                    "caption": f"✨ *Prompt:* {item.prompt}\n⚡ *Motor:* {engine_used}",
+                    "parse_mode": "Markdown",
+                }
+                requests.post(tg_url, data=data, files=files, timeout=30)
+            except Exception as e:
+                print(f"Error enviando foto a Telegram en hilo: {e}")
+
+        threading.Thread(target=send_telegram_photo).start()
+
+        # Responder de inmediato al ESP32 para evitar el timeout -11
+        return {"success": True}
+
     except Exception as e:
         return {"success": False, "error": "servidor lleno espera un minuto"}
