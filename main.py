@@ -1,9 +1,7 @@
 import base64
-import json
 import os
 import sqlite3
 import threading
-import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -14,16 +12,18 @@ import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Lumina Backend", version="3.0-resilient")
+app = FastAPI(title="Lumina Backend", version="3.3-adjusted")
 
 # ---------------- CONFIGURACIÓN ----------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "")
-GEMINI_MODEL = "gemini-3.8-flash"
 ADMIN_ID = "6363412200"
 
-MAX_TELEGRAM_FILE_BYTES = 14 * 1024 * 1024
+# Modelos oficiales asignados por función
+CHAT_MODEL = "gemma-4-31b-it"
+VISION_AND_PROMPT_MODEL = "gemini-3.8-flash"
+
 MAX_STORED_MEMORIES_PER_USER = 100
 
 DB_PATH = os.getenv(
@@ -96,7 +96,7 @@ class ChatItem(BaseModel):
     chat_id: str
     message: str
     gemini_keys: list[str] = Field(default_factory=list)
-    model: str = "gemma-4-31b-it"
+    model: str = CHAT_MODEL
 
 
 class VisionItem(BaseModel):
@@ -126,7 +126,7 @@ def startup_event():
                 url,
                 json={
                     "chat_id": ADMIN_ID,
-                    "text": "🟢 ¡Backend Lumina 3.0 Resilient en línea y listo con sistema de tareas asíncronas!",
+                    "text": "🟢 ¡Backend Lumina 3.3 ajustado en línea y listo!",
                 },
                 timeout=10
             )
@@ -136,7 +136,7 @@ def startup_event():
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "bot": "Lumina Backend 3.0 Active"}
+    return {"status": "online", "bot": "Lumina Backend Active"}
 
 
 # ---------------- GESTIÓN DE TAREAS (JOBS) ----------------
@@ -172,11 +172,12 @@ def create_image_job(item: ImageItem):
             enhanced_prompt = item.prompt
             keys_to_try = item.gemini_keys if item.gemini_keys else []
 
+            # Optimización de prompt con gemini-3.8-flash
             for key in keys_to_try:
                 if key and len(key) > 10:
                     try:
                         genai.configure(api_key=key)
-                        model = genai.GenerativeModel(GEMINI_MODEL)
+                        model = genai.GenerativeModel(VISION_AND_PROMPT_MODEL)
                         opt_res = model.generate_content(
                             f"Translate and optimize this prompt into English for FLUX AI to generate an ultra-realistic, highly detailed, cinematic masterpiece image, ensuring any requested text inside quotes remains exactly as specified: {item.prompt}"
                         )
@@ -208,7 +209,7 @@ def create_image_job(item: ImageItem):
             # 2. Respaldo Pollinations.ai
             if not image_bytes:
                 try:
-                    encoded_prompt = urllib.parse.quote(enhanced_prompt)
+                    encoded_prompt = urllib.parse.quote(enhanced_prompt) if 'urllib' in globals() else enhanced_prompt.replace(' ', '%20')
                     image_url = f"https://pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&nologo=true&model=flux"
                     img_resp = SESSION.get(image_url, timeout=55)
                     if img_resp.status_code == 200:
@@ -262,7 +263,7 @@ def create_image_job(item: ImageItem):
     return {"success": True, "job_id": job_id}
 
 
-# ---------------- ENDPOINT VISIÓN (ASÍNCRONO) ----------------
+# ---------------- ENDPOINT VISIÓN (ASÍNCRONO - Usa gemini-3.8-flash) ----------------
 @app.post("/vision")
 def create_vision_job(item: VisionItem):
     with _job_lock:
@@ -348,10 +349,11 @@ def create_vision_job(item: VisionItem):
             last_error = ""
             analysis_text = ""
 
+            # Análisis con gemini-3.8-flash
             for key in keys_to_try:
                 if not key or len(key) < 10:
                     continue
-                gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={key}"
+                gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{VISION_AND_PROMPT_MODEL}:generateContent?key={key}"
                 gem_resp = SESSION.post(gemini_url, headers=headers, json=payload, timeout=60)
                 if gem_resp.status_code == 200:
                     gem_data = gem_resp.json()
@@ -395,7 +397,7 @@ def create_vision_job(item: VisionItem):
     return {"success": True, "job_id": job_id}
 
 
-# ---------------- ENDPOINT CHAT ----------------
+# ---------------- ENDPOINT CHAT (Usa gemma-4-31b-it) ----------------
 @app.post("/chat")
 def handle_chat_backend(item: ChatItem):
     try:
@@ -428,7 +430,7 @@ def handle_chat_backend(item: ChatItem):
 
         headers = {"Content-Type": "application/json"}
         payload = {"contents": contents_payload}
-        target_model = item.model if item.model else "gemma-4-31b-it"
+        target_model = CHAT_MODEL
         last_error = ""
 
         for key in keys_to_try:
