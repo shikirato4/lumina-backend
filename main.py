@@ -1,11 +1,13 @@
 import base64
 import os
 import sqlite3
+import subprocess
 import threading
+import time
+from datetime import datetime, timezone, timedelta
 import urllib.parse
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 from typing import Any
 
 import google.generativeai as genai
@@ -13,7 +15,7 @@ import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Lumina Backend", version="3.5-fixed")
+app = FastAPI(title="Lumina Backend", version="3.6-jarvis")
 
 # ---------------- CONFIGURACIÓN ----------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -23,6 +25,8 @@ ADMIN_ID = "6363412200"
 
 CHAT_MODEL = "gemma-4-31b-it"
 VISION_AND_PROMPT_MODEL = "gemini-3.8-flash"
+CONCEPTUAL_MODEL = "gemma-4-31b-it"
+IMAGE_MODEL = "@cf/black-forest-labs/flux-1-dev"
 
 MAX_STORED_MEMORIES_PER_USER = 100
 
@@ -48,7 +52,7 @@ jobs: dict[str, dict[str, Any]] = {}
 job_request_index: dict[str, str] = {}
 
 executor = ThreadPoolExecutor(
-    max_workers=3,
+    max_workers=4,
     thread_name_prefix="lumina-job"
 )
 
@@ -70,6 +74,15 @@ def init_db():
                 user_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                task TEXT NOT NULL,
+                trigger_at TEXT NOT NULL,
+                interval_minutes INTEGER DEFAULT 0
             )
         """)
         conn.commit()
@@ -116,8 +129,61 @@ class ImageItem(BaseModel):
     request_id: str = ""
 
 
+class MapItem(BaseModel):
+    chat_id: str
+    theme: str
+    request_id: str = ""
+
+
+# ---------------- HILO SEGUNDO PLANO (RECORDATORIOS) ----------------
+def reminder_background_worker():
+    while True:
+        try:
+            now_str = datetime.now(timezone.utc).isoformat()
+            with _db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, chat_id, task, trigger_at, interval_minutes FROM reminders WHERE trigger_at <= ?",
+                    (now_str,)
+                )
+                due_reminders = cursor.fetchall()
+
+                for rem_id, chat_id, task, trigger_at, interval_min in due_reminders:
+                    msg_text = f"⏰ *¡Recordatorio Jarvis!*\n\n{task}"
+                    try:
+                        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+                        SESSION.post(
+                            url,
+                            json={"chat_id": chat_id, "text": msg_text, "parse_mode": "Markdown"},
+                            timeout=10
+                        )
+                    except Exception as e:
+                        print(f"Error enviando recordatorio a Telegram: {e}")
+
+                    if interval_min and interval_min > 0:
+                        next_time = datetime.fromisoformat(trigger_at) + timedelta(minutes=interval_min)
+                        if next_time < datetime.now(timezone.utc):
+                            next_time = datetime.now(timezone.utc) + timedelta(minutes=interval_min)
+                        cursor.execute(
+                            "UPDATE reminders SET trigger_at = ? WHERE id = ?",
+                            (next_time.isoformat(), rem_id)
+                        )
+                    else:
+                        cursor.execute("DELETE FROM reminders WHERE id = ?", (rem_id,))
+
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            print(f"Error en worker de recordatorios: {e}")
+        time.sleep(60)
+
+
 @app.on_event("startup")
 def startup_event():
+    # Arrancar el hilo de recordatorios autónomos
+    threading.Thread(target=reminder_background_worker, daemon=True).start()
+
     if TELEGRAM_BOT_TOKEN:
         try:
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -125,7 +191,7 @@ def startup_event():
                 url,
                 json={
                     "chat_id": ADMIN_ID,
-                    "text": "🟢 ¡Backend Lumina 3.5 en línea y listo!",
+                    "text": "🟢 ¡Lumina 3.6 Jarvis en línea! (FLUX-dev + Visión + Mapas + Recordatorios + Memoria)",
                 },
                 timeout=10
             )
@@ -147,7 +213,7 @@ def get_job_status(job_id: str):
         return job
 
 
-# ---------------- ENDPOINT IMAGEN (ASÍNCRONO) ----------------
+# ---------------- ENDPOINT IMAGEN (ASÍNCRONO CON FLUX-DEV) ----------------
 @app.post("/image")
 def create_image_job(item: ImageItem):
     with _job_lock:
@@ -170,14 +236,14 @@ def create_image_job(item: ImageItem):
             enhanced_prompt = item.prompt
             keys_to_try = item.gemini_keys if item.gemini_keys else []
 
-            # Optimización de prompt con gemini-3.8-flash
+            # Optimización de prompt con estilo fotográfico crudo y natural (sin CGI ni plásticos)
             for key in keys_to_try:
                 if key and len(key) > 10:
                     try:
                         genai.configure(api_key=key)
                         model = genai.GenerativeModel(VISION_AND_PROMPT_MODEL)
                         opt_res = model.generate_content(
-                            f"Translate and optimize this prompt into English for FLUX AI to generate an ultra-realistic, highly detailed, cinematic masterpiece image, ensuring any requested text inside quotes remains exactly as specified: {item.prompt}"
+                            f"Translate and expand this prompt into a natural, raw, casual, unedited amateur smartphone photo style with realistic lighting, natural skin textures, imperfections, and optical artifacts, avoiding any CGI or cinematic render look: {item.prompt}"
                         )
                         if opt_res and hasattr(opt_res, "text") and opt_res.text:
                             enhanced_prompt = opt_res.text.strip()
@@ -188,16 +254,16 @@ def create_image_job(item: ImageItem):
             image_bytes = None
             engine_used = ""
 
-            # 1. Cloudflare Workers AI
+            # 1. Cloudflare Workers AI con FLUX-DEV
             if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
                 try:
-                    cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/black-forest-labs/flux-1-schnell"
+                    cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{IMAGE_MODEL}"
                     cf_headers = {
                         "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
                         "Content-Type": "application/json",
                     }
                     cf_payload = {"prompt": enhanced_prompt}
-                    cf_resp = SESSION.post(cf_url, headers=cf_headers, json=cf_payload, timeout=30)
+                    cf_resp = SESSION.post(cf_url, headers=cf_headers, json=cf_payload, timeout=40)
                     
                     print(f"CF Status Code: {cf_resp.status_code}")
                     print(f"CF Response Text: {cf_resp.text}")
@@ -206,7 +272,7 @@ def create_image_job(item: ImageItem):
                         res_json = cf_resp.json()
                         if "result" in res_json and res_json["result"] and "image" in res_json["result"]:
                             image_bytes = base64.b64decode(res_json["result"]["image"])
-                            engine_used = "Cloudflare FLUX.1"
+                            engine_used = "Cloudflare FLUX.1-dev"
                 except Exception as e:
                     print(f"Cloudflare exception: {e}")
 
@@ -264,6 +330,82 @@ def create_image_job(item: ImageItem):
                 }
 
     executor.submit(run_image_task)
+    return {"success": True, "job_id": job_id}
+
+
+# ---------------- ENDPOINT CONCEPTUAL MAP (MERMAID CLI) ----------------
+@app.post("/conceptual_map")
+def create_map_job(item: MapItem):
+    with _job_lock:
+        if item.request_id and item.request_id in job_request_index:
+            existing_id = job_request_index[item.request_id]
+            return {"success": True, "job_id": existing_id}
+
+        job_id = uuid.uuid4().hex
+        if item.request_id:
+            job_request_index[item.request_id] = job_id
+
+        jobs[job_id] = {"state": "processing", "success": False, "error": None}
+
+    def run_map_task():
+        try:
+            keys_to_try = [os.getenv("GEMINI_KEY", "")]
+            mermaid_code = ""
+
+            for key in keys_to_try:
+                if key and len(key) > 10:
+                    try:
+                        genai.configure(api_key=key)
+                        model = genai.GenerativeModel(CONCEPTUAL_MODEL)
+                        system_instr = "You are an AI specialized in conceptual diagrams. Create a logical, structured Mermaid.js conceptual map or flowchart of the requested theme. Provide ONLY the Mermaid.js code, with legible labels in Spanish, without markdown formatting or code blocks. Use a 'graph TD' (top-down) structure."
+                        
+                        opt_res = model.generate_content(
+                            contents=[{"role": "user", "parts": [{"text": f"Tema: {item.theme}"}]}],
+                            generation_config={"temperature": 0.2},
+                            system_instruction={"parts": [{"text": system_instr}]}
+                        )
+                        if opt_res and hasattr(opt_res, "text") and opt_res.text:
+                            mermaid_code = opt_res.text.strip()
+                        break
+                    except Exception:
+                        continue
+
+            if not mermaid_code or len(mermaid_code) < 20:
+                with _job_lock:
+                    jobs[job_id] = {"state": "completed", "success": False, "error": "No se pudo generar el código del mapa mental."}
+                return
+
+            output_filename = f"diagram-{job_id}.png"
+            command = ["mmdc", "-i", "-", "-o", output_filename, "-b", "white", "-t", "neutral"]
+            
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout, stderr = process.communicate(input=mermaid_code, timeout=35)
+
+            if process.returncode != 0 or not os.path.exists(output_filename):
+                with _job_lock:
+                    jobs[job_id] = {"state": "completed", "success": False, "error": f"Error renderizando diagrama: {stderr}"}
+                return
+
+            with open(output_filename, "rb") as image_file:
+                map_bytes = image_file.read()
+            os.remove(output_filename)
+
+            tg_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+            files = {"photo": ("map.png", map_bytes, "image/png")}
+            data = {
+                "chat_id": item.chat_id,
+                "caption": f"💡 *Mapa Conceptual:* {item.theme}\n🛠️ *Generado con:* Gemma + Mermaid",
+                "parse_mode": "Markdown",
+            }
+            tg_resp = SESSION.post(tg_url, data=data, files=files, timeout=45)
+
+            with _job_lock:
+                jobs[job_id] = {"state": "completed", "success": tg_resp.status_code == 200, "error": None}
+        except Exception as e:
+            with _job_lock:
+                jobs[job_id] = {"state": "completed", "success": False, "error": f"Excepción en mapa: {str(e)}"}
+
+    executor.submit(run_map_task)
     return {"success": True, "job_id": job_id}
 
 
@@ -400,7 +542,7 @@ def create_vision_job(item: VisionItem):
     return {"success": True, "job_id": job_id}
 
 
-# ---------------- ENDPOINT CHAT ----------------
+# ---------------- ENDPOINT CHAT + RECORDATORIOS INTELIGENTES ----------------
 @app.post("/chat")
 def handle_chat_backend(item: ChatItem):
     try:
@@ -431,9 +573,31 @@ def handle_chat_backend(item: ChatItem):
         if not keys_to_try:
             return {"success": False, "error": "No se proporcionaron llaves de Gemini."}
 
+        # Instrucción de sistema para detector de recordatorios en lenguaje natural + Jarvis
+        now_iso = datetime.now(timezone.utc).isoformat()
+        system_instruction = f"""You are Lumina (Jarvis), an advanced personal AI assistant. 
+Current UTC Time: {now_iso}.
+Analyze the user message. If the user wants to set a reminder (e.g., "recuérdame tal en 10 minutos", "recuérdame cada 2 horas"), you MUST output a JSON block at the very beginning of your response in this exact format:
+{{
+  "is_reminder": true,
+  "task": "descripción de la tarea",
+  "trigger_at": "ISO8601 UTC timestamp when it should fire",
+  "interval_minutes": 0 or minutes if it's recurring
+}}
+If it is NOT a reminder, output:
+{{
+  "is_reminder": false
+}}
+Followed by your natural conversational response to the user in Spanish."""
+
         headers = {"Content-Type": "application/json"}
-        payload = {"contents": contents_payload}
+        payload = {
+            "contents": contents_payload,
+            "system_instruction": {"parts": [{"text": system_instruction}]}
+        }
+        
         target_model = CHAT_MODEL
+        answer = ""
         last_error = ""
 
         for key in keys_to_try:
@@ -446,30 +610,63 @@ def handle_chat_backend(item: ChatItem):
                 gem_data = gem_resp.json()
                 if "candidates" in gem_data and len(gem_data["candidates"]) > 0:
                     parts = gem_data["candidates"][0]["content"]["parts"]
-                    answer = ""
                     for part in parts:
                         if part.get("thought", False):
                             continue
                         if "text" in part:
                             answer += part["text"]
                     answer = answer.strip()
-
                     if answer:
-                        with chat_lock:
-                            chat_context[session_id].append({"role": "user", "text": item.message})
-                            chat_context[session_id].append({"role": "model", "text": answer})
-                            if len(chat_context[session_id]) > 20:
-                                chat_context[session_id] = chat_context[session_id][-20:]
-
-                        final_reply = answer
-                        if is_new_or_reset:
-                            final_reply = "✨ *¡Chat iniciado / abierto con éxito!* 🚀\n\n" + answer
-
-                        return {"success": True, "reply": final_reply}
+                        break
             else:
                 last_error = f"HTTP {gem_resp.status_code}: {gem_resp.text}"
 
-        return {"success": False, "error": f"Todas las llaves fallaron. {last_error}"}
+        if not answer:
+            return {"success": False, "error": f"Todas las llaves fallaron. {last_error}"}
+
+        reply_to_user = answer
+        if "is_reminder" in answer:
+            try:
+                import json
+                first_brace = answer.find("{")
+                last_brace = answer.rfind("}")
+                if first_brace != -1 and last_brace != -1:
+                    json_str = answer[first_brace:last_brace+1]
+                    rem_data = json.loads(json_str)
+                    
+                    if rem_data.get("is_reminder"):
+                        task_desc = rem_data.get("task", "Recordatorio general")
+                        trigger_at = rem_data.get("trigger_at", datetime.now(timezone.utc).isoformat())
+                        interval_min = rem_data.get("interval_minutes", 0)
+
+                        with _db_lock:
+                            conn = sqlite3.connect(DB_PATH)
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                "INSERT INTO reminders (chat_id, task, trigger_at, interval_minutes) VALUES (?, ?, ?, ?)",
+                                (session_id, task_desc, trigger_at, interval_min)
+                            )
+                            conn.commit()
+                            conn.close()
+
+                        reply_to_user = answer[last_brace+1:].strip()
+                        if not reply_to_user:
+                            reply_to_user = f"✅ ¡Entendido! He programado tu recordatorio: *{task_desc}*."
+            except Exception as e:
+                print(f"Error procesando JSON de recordatorio: {e}")
+
+        with chat_lock:
+            chat_context[session_id].append({"role": "user", "text": item.message})
+            chat_context[session_id].append({"role": "model", "text": reply_to_user})
+            if len(chat_context[session_id]) > 20:
+                chat_context[session_id] = chat_context[session_id][-20:]
+
+        final_reply = reply_to_user
+        if is_new_or_reset and not "is_reminder" in answer:
+            final_reply = "✨ *¡Chat iniciado / abierto con éxito!* 🚀\n\n" + reply_to_user
+
+        return {"success": True, "reply": final_reply}
+
     except Exception as e:
         return {"success": False, "error": f"Excepción en chat: {str(e)}"}
 
